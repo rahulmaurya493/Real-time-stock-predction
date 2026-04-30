@@ -223,10 +223,11 @@ def build_features(df):
 # PREDICT
 # ─────────────────────────────────────────
 def run_prediction(df):
-    """Train Ridge on the fly and predict next 7 days."""
     from sklearn.linear_model  import Ridge
     from sklearn.preprocessing import MinMaxScaler
+    from sklearn.metrics       import mean_squared_error, r2_score
 
+    df = df.copy()
     df["Target"] = df["close"].shift(-1)
     df.dropna(inplace=True)
 
@@ -238,47 +239,59 @@ def run_prediction(df):
     X_sc     = scaler_X.fit_transform(X)
     y_sc     = scaler_y.fit_transform(y.reshape(-1,1)).ravel()
 
-    split    = int(len(X_sc) * 0.8)
-    model    = Ridge(alpha=1.0)
+    split = int(len(X_sc) * 0.8)
+    model = Ridge(alpha=1.0)
     model.fit(X_sc[:split], y_sc[:split])
 
-    # Metrics on test
+    # ── Metrics ──
     y_pred_sc  = model.predict(X_sc[split:])
-    y_pred_act = scaler_y.inverse_transform(y_pred_sc.reshape(-1,1)).ravel()
+    y_pred_act = scaler_y.inverse_transform(
+                    y_pred_sc.reshape(-1,1)).ravel()
     y_act      = y[split:]
-
-    from sklearn.metrics import mean_squared_error, r2_score
     rmse = float(np.sqrt(mean_squared_error(y_act, y_pred_act)))
     r2   = float(r2_score(y_act, y_pred_act))
 
-    # Predict next 7 days iteratively
-    last_row   = X_sc[-1].copy()
-    forecast   = []
-    last_close = float(df["close"].iloc[-1])
+    # ── 7-Day Forecast (FIXED) ──
+    # Step 1: Predict Day 1 from real latest features
+    last_X      = X_sc[-1].reshape(1, -1)
+    day1_sc     = model.predict(last_X)
+    day1_price  = float(scaler_y.inverse_transform(
+                    day1_sc.reshape(-1,1))[0][0])
 
-    for _ in range(7):
-        pred_sc    = model.predict(last_row.reshape(1,-1))
-        pred_price = float(scaler_y.inverse_transform(pred_sc.reshape(-1,1))[0][0])
-        forecast.append(pred_price)
-        last_row   = last_row.copy()
+    last_close  = float(df["close"].iloc[-1])
+
+    # Step 2: Calculate avg daily return trend from last 30 days
+    recent_returns = df["daily_return"].tail(30).values
+    avg_daily_ret  = float(np.mean(recent_returns)) / 100  # as decimal
+
+    # Step 3: Build 7 days using day1 + compound trend
+    forecast_prices = []
+    price = day1_price
+    for i in range(7):
+        forecast_prices.append(round(price, 2))
+        # Each next day compounds slightly with avg trend
+        # Add small noise based on recent volatility
+        volatility = float(df["daily_return"].tail(30).std()) / 100
+        daily_move = avg_daily_ret + np.random.normal(0, volatility * 0.3)
+        price      = price * (1 + daily_move)
 
     last_date   = pd.to_datetime(df["date"].iloc[-1])
-    dates       = pd.bdate_range(start=last_date + timedelta(days=1), periods=7)
+    dates       = pd.bdate_range(
+                    start=last_date + timedelta(days=1), periods=7)
 
     forecast_df = pd.DataFrame({
-        "Date"           : dates,
-        "Predicted_Price": [round(p,2) for p in forecast],
-        "Day"            : [f"Day {i+1}" for i in range(7)]
+        "Date"            : dates,
+        "Predicted_Price" : forecast_prices,
+        "Day"             : [f"Day {i+1}" for i in range(7)]
     })
-    forecast_df["Change_₹"] = (forecast_df["Predicted_Price"] - last_close).round(2)
-    forecast_df["Change_%"] = ((forecast_df["Change_₹"] / last_close)*100).round(2)
+    forecast_df["Change_₹"] = (
+        forecast_df["Predicted_Price"] - last_close).round(2)
+    forecast_df["Change_%"] = (
+        (forecast_df["Change_₹"] / last_close) * 100).round(2)
     forecast_df["Signal"]   = forecast_df["Change_₹"].apply(
-        lambda x: "🟢 BUY" if x > 0 else "🔴 SELL"
-    )
+        lambda x: "🟢 BUY" if x > 0 else "🔴 SELL")
 
     return forecast_df, rmse, r2, model, scaler_X, scaler_y
-
-
 # ─────────────────────────────────────────
 # SAVE TO SUPABASE
 # ─────────────────────────────────────────
