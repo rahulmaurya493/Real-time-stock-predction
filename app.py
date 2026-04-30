@@ -243,6 +243,47 @@ def run_prediction(df):
     model = Ridge(alpha=1.0)
     model.fit(X_sc[:split], y_sc[:split])
 
+    # Metrics
+    y_pred_sc  = model.predict(X_sc[split:])
+    y_pred_act = scaler_y.inverse_transform(
+                    y_pred_sc.reshape(-1,1)).ravel()
+    y_act      = y[split:]
+    rmse = float(np.sqrt(mean_squared_error(y_act, y_pred_act)))
+    r2   = float(r2_score(y_act, y_pred_act))
+
+    # ── Day 1 — Real model prediction ──
+    day1_price = float(scaler_y.inverse_transform(
+        model.predict(X_sc[-1].reshape(1,-1)).reshape(-1,1))[0][0])
+
+    last_close = float(df["close"].iloc[-1])
+
+    # ── Day 2-7 — Fixed avg trend, NO randomness ──
+    avg_daily_ret = float(df["daily_return"].tail(60).mean()) / 100
+
+    forecast_prices = []
+    price = day1_price
+    for i in range(7):
+        forecast_prices.append(round(price, 2))
+        price = price * (1 + avg_daily_ret)  # pure avg trend, no random
+
+    last_date   = pd.to_datetime(df["date"].iloc[-1])
+    dates       = pd.bdate_range(
+                    start=last_date + timedelta(days=1), periods=7)
+
+    forecast_df = pd.DataFrame({
+        "Date"            : dates,
+        "Predicted_Price" : forecast_prices,
+        "Day"             : [f"Day {i+1}" for i in range(7)]
+    })
+    forecast_df["Change_₹"] = (
+        forecast_df["Predicted_Price"] - last_close).round(2)
+    forecast_df["Change_%"] = (
+        (forecast_df["Change_₹"] / last_close) * 100).round(2)
+    forecast_df["Signal"]   = forecast_df["Change_₹"].apply(
+        lambda x: "🟢 BUY" if x > 0 else "🔴 SELL")
+
+    return forecast_df, rmse, r2, model, scaler_X, scaler_y
+
     # ── Metrics ──
     y_pred_sc  = model.predict(X_sc[split:])
     y_pred_act = scaler_y.inverse_transform(
