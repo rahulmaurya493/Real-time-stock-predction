@@ -243,6 +243,57 @@ def run_prediction(df):
     model = Ridge(alpha=1.0)
     model.fit(X_sc[:split], y_sc[:split])
 
+    # ── Metrics ──
+    y_pred_sc  = model.predict(X_sc[split:])
+    y_pred_act = scaler_y.inverse_transform(
+                    y_pred_sc.reshape(-1,1)).ravel()
+    y_act      = y[split:]
+    rmse = float(np.sqrt(mean_squared_error(y_act, y_pred_act)))
+    r2   = float(r2_score(y_act, y_pred_act))
+
+    last_close = float(df["close"].iloc[-1])
+
+    # ── Day 1 — Predict from real features ──
+    day1_raw = float(scaler_y.inverse_transform(
+        model.predict(X_sc[-1].reshape(1,-1)).reshape(-1,1))[0][0])
+
+    # ✅ CLAMP Day 1 within ±5% of last close (prevents huge jumps)
+    max_move  = last_close * 0.05
+    day1_price = float(np.clip(
+        day1_raw,
+        last_close - max_move,
+        last_close + max_move
+    ))
+
+    # ── Day 2-7 — Fixed avg trend from last 60 days ──
+    # ✅ Also clamp avg return to ±0.5% per day (prevents compounding explosion)
+    avg_daily_ret = float(df["daily_return"].tail(60).mean()) / 100
+    avg_daily_ret = float(np.clip(avg_daily_ret, -0.005, 0.005))
+
+    forecast_prices = []
+    price = day1_price
+    for i in range(7):
+        forecast_prices.append(round(price, 2))
+        price = price * (1 + avg_daily_ret)
+
+    last_date = pd.to_datetime(df["date"].iloc[-1])
+    dates     = pd.bdate_range(
+                    start=last_date + timedelta(days=1), periods=7)
+
+    forecast_df = pd.DataFrame({
+        "Date"            : dates,
+        "Predicted_Price" : forecast_prices,
+        "Day"             : [f"Day {i+1}" for i in range(7)]
+    })
+    forecast_df["Change_₹"] = (
+        forecast_df["Predicted_Price"] - last_close).round(2)
+    forecast_df["Change_%"] = (
+        (forecast_df["Change_₹"] / last_close) * 100).round(2)
+    forecast_df["Signal"]   = forecast_df["Change_₹"].apply(
+        lambda x: "🟢 BUY" if x > 0 else "🔴 SELL")
+
+    return forecast_df, rmse, r2, model, scaler_X, scaler_y
+
     # Metrics
     y_pred_sc  = model.predict(X_sc[split:])
     y_pred_act = scaler_y.inverse_transform(
