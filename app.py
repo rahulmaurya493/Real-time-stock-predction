@@ -331,16 +331,17 @@ def save_to_db(client, stock_name, ticker, forecast_df, rmse, r2):
                 "ticker"         : ticker,
                 "stock_name"     : stock_name,
                 "predicted_price": float(row["Predicted_Price"]),
-                "direction"      : "UP" if row["Change_₹"] >= 0 else "DOWN",
+                "actual_price"   : None,
+                "direction"      : "UP" if float(row["Change_₹"]) >= 0 else "DOWN",
                 "change_pct"     : float(row["Change_%"]),
-                "rmse"           : round(rmse, 4),
-                "r2_score"       : round(r2, 4),
+                "rmse"           : round(float(rmse), 4),
+                "r2_score"       : round(float(r2), 4),
                 "features_used"  : len(FEATURE_COLS),
             })
         client.table("predictions").insert(records).execute()
+        print(f"✅ Saved {len(records)} predictions for {stock_name}")
     except Exception as e:
-        pass   # silent fail — don't break the app
-
+        print(f"❌ Save error: {e}")
 
 # ─────────────────────────────────────────
 # SIDEBAR
@@ -681,96 +682,138 @@ def page_history():
 
     client = get_supabase()
     if client is None:
-        st.error("Database not connected. Check your Supabase credentials in secrets.toml")
+        st.error("❌ Database not connected. Check Supabase credentials in secrets.")
         return
 
     try:
-        result = client.table("predictions")\
-            .select("*").order("predicted_at", desc=True).limit(200).execute()
-        data   = result.data
+        # ── Fetch from Supabase ──
+        result = client.table("predictions") \
+            .select("id, ticker, stock_name, predicted_price, actual_price, direction, change_pct, rmse, r2_score, features_used, predicted_at") \
+            .order("predicted_at", desc=True) \
+            .limit(200) \
+            .execute()
+
+        data = result.data
 
         if not data:
-            st.info("📭 No predictions saved yet. Run a prediction first!")
+            st.markdown("""
+            <div class='card' style='text-align:center;padding:40px;'>
+                <div style='font-size:3rem;'>📭</div>
+                <p style='color:rgba(255,255,255,0.5);margin-top:12px;'>
+                    No predictions saved yet!<br>
+                    Go to AI Prediction page and run a forecast first.
+                </p>
+            </div>""", unsafe_allow_html=True)
             return
 
         df_hist = pd.DataFrame(data)
+        df_hist["predicted_at"] = pd.to_datetime(df_hist["predicted_at"])
 
-        # Summary stats
-        c1,c2,c3,c4 = st.columns(4)
+        # ── Summary Stats ──
+        st.markdown("<br>", unsafe_allow_html=True)
+        c1, c2, c3, c4 = st.columns(4)
+
         with c1:
             st.markdown(f"""<div class='metric-box'>
                 <div class='metric-val'>{len(df_hist)}</div>
-                <div class='metric-lbl'>Total Predictions</div></div>""",
-                unsafe_allow_html=True)
+                <div class='metric-lbl'>Total Predictions</div>
+            </div>""", unsafe_allow_html=True)
+
         with c2:
+            unique_stocks = df_hist["stock_name"].nunique()
             st.markdown(f"""<div class='metric-box'>
-                <div class='metric-val'>{df_hist['stock_name'].nunique()}</div>
-                <div class='metric-lbl'>Stocks Tracked</div></div>""",
-                unsafe_allow_html=True)
+                <div class='metric-val'>{unique_stocks}</div>
+                <div class='metric-lbl'>Stocks Tracked</div>
+            </div>""", unsafe_allow_html=True)
+
         with c3:
-            ups = len(df_hist[df_hist["direction"]=="UP"])
+            up_count = len(df_hist[df_hist["direction"] == "UP"])
             st.markdown(f"""<div class='metric-box'>
-                <div class='metric-val' style='color:#00dc82;'>{ups}</div>
-                <div class='metric-lbl'>BUY Signals</div></div>""",
-                unsafe_allow_html=True)
+                <div class='metric-val' style='color:#00dc82;'>{up_count}</div>
+                <div class='metric-lbl'>🟢 BUY Signals</div>
+            </div>""", unsafe_allow_html=True)
+
         with c4:
-            dns = len(df_hist[df_hist["direction"]=="DOWN"])
+            dn_count = len(df_hist[df_hist["direction"] == "DOWN"])
             st.markdown(f"""<div class='metric-box'>
-                <div class='metric-val' style='color:#ff5050;'>{dns}</div>
-                <div class='metric-lbl'>SELL Signals</div></div>""",
-                unsafe_allow_html=True)
+                <div class='metric-val' style='color:#ff5050;'>{dn_count}</div>
+                <div class='metric-lbl'>🔴 SELL Signals</div>
+            </div>""", unsafe_allow_html=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        # Filter
-        stocks_in_db = ["All"] + sorted(df_hist["stock_name"].unique().tolist())
-        selected     = st.selectbox("Filter by Stock", stocks_in_db)
-        if selected != "All":
-            df_hist = df_hist[df_hist["stock_name"] == selected]
+        # ── Filter by Stock ──
+        stocks_available = ["All"] + sorted(df_hist["stock_name"].dropna().unique().tolist())
+        selected = st.selectbox("🔍 Filter by Stock", stocks_available)
 
-        # Table header
+        if selected != "All":
+            df_hist = df_hist[df_hist["stock_name"] == selected].reset_index(drop=True)
+
+        st.markdown(f"<p style='color:rgba(255,255,255,0.4);font-size:0.82rem;'>Showing {len(df_hist)} records</p>",
+                    unsafe_allow_html=True)
+
+        # ── Table Header ──
         st.markdown("""
         <div style='display:flex;padding:10px 16px;
              color:rgba(255,255,255,0.35);font-size:0.72rem;
              font-weight:700;text-transform:uppercase;letter-spacing:0.8px;
-             border-bottom:1px solid rgba(255,255,255,0.12);'>
-            <span style='flex:1.5;'>Date & Time</span>
+             border-bottom:1px solid rgba(255,255,255,0.12);
+             margin-top:12px;'>
+            <span style='flex:2;'>Date & Time</span>
             <span style='flex:1;'>Stock</span>
+            <span style='flex:1;'>Ticker</span>
             <span style='flex:1.2;'>Predicted ₹</span>
             <span style='flex:1;'>Change %</span>
             <span style='flex:0.8;'>Signal</span>
-            <span style='flex:0.8;'>R²</span>
+            <span style='flex:0.7;'>R²</span>
+            <span style='flex:0.7;'>RMSE</span>
         </div>""", unsafe_allow_html=True)
 
+        # ── Table Rows ──
         for _, row in df_hist.iterrows():
-            date_str  = pd.to_datetime(row["predicted_at"]).strftime("%d %b %Y, %H:%M")
-            badge     = "badge-up" if row["direction"]=="UP" else "badge-down"
-            signal    = "🟢 BUY"   if row["direction"]=="UP" else "🔴 SELL"
-            chg_color = "#00dc82"  if row["direction"]=="UP" else "#ff5050"
-            chg_pct   = row.get("change_pct", 0) or 0
+            date_str   = row["predicted_at"].strftime("%d %b %Y, %H:%M")
+            direction  = row.get("direction") or "UP"
+            badge      = "badge-up"   if direction == "UP" else "badge-down"
+            signal     = "🟢 BUY"    if direction == "UP" else "🔴 SELL"
+            chg_color  = "#00dc82"   if direction == "UP" else "#ff5050"
+            chg_pct    = float(row.get("change_pct")  or 0)
+            r2_val     = float(row.get("r2_score")    or 0)
+            rmse_val   = float(row.get("rmse")        or 0)
+            pred_price = float(row.get("predicted_price") or 0)
+            sign       = "+" if chg_pct >= 0 else ""
 
             st.markdown(f"""
             <div style='display:flex;align-items:center;padding:11px 16px;
-                 border-bottom:1px solid rgba(255,255,255,0.06);font-size:0.87rem;'>
-                <span style='flex:1.5;color:rgba(255,255,255,0.45);'>{date_str}</span>
-                <span style='flex:1;color:white;font-weight:700;'>{row['stock_name']}</span>
-                <span style='flex:1.2;color:white;font-weight:700;'>
-                    ₹{row['predicted_price']:,.2f}</span>
+                 border-bottom:1px solid rgba(255,255,255,0.06);
+                 font-size:0.85rem;transition:background 0.2s;'>
+                <span style='flex:2;color:rgba(255,255,255,0.45);'>{date_str}</span>
+                <span style='flex:1;color:white;font-weight:700;'>{row.get("stock_name","—")}</span>
+                <span style='flex:1;color:rgba(255,255,255,0.45);'>{row.get("ticker","—")}</span>
+                <span style='flex:1.2;color:white;font-weight:800;'>₹{pred_price:,.2f}</span>
                 <span style='flex:1;color:{chg_color};font-weight:700;'>
-                    {"+"+str(round(chg_pct,2)) if chg_pct>=0 else str(round(chg_pct,2))}%
-                </span>
+                    {sign}{chg_pct:.2f}%</span>
                 <span style='flex:0.8;'>
-                    <span class='{badge}' style='font-size:0.75rem;padding:3px 10px;'>
+                    <span class='{badge}'
+                          style='font-size:0.72rem;padding:3px 10px;'>
                         {signal}</span>
                 </span>
-                <span style='flex:0.8;color:rgba(255,255,255,0.5);'>
-                    {round(row.get("r2_score",0) or 0, 3)}</span>
+                <span style='flex:0.7;color:rgba(255,255,255,0.5);'>{r2_val:.3f}</span>
+                <span style='flex:0.7;color:rgba(255,255,255,0.5);'>₹{rmse_val:.1f}</span>
             </div>""", unsafe_allow_html=True)
 
+        # ── Clear History Button ──
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("🗑️ Clear All History", use_container_width=False):
+            try:
+                client.table("predictions").delete().neq("id", 0).execute()
+                st.success("✅ History cleared!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ Could not clear: {e}")
+
     except Exception as e:
-        st.error(f"Error loading history: {e}")
-
-
+        st.error(f"❌ Error loading history: {e}")
+        st.code(str(e))
 # ─────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────
